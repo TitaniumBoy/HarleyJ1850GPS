@@ -51,7 +51,7 @@ static void sendmid()
 
 // time in TOVFs to make the UART RX to TX transparent (dump other traffic).
 static unsigned transptime = 0;
-
+static unsigned char innmea = 0;
 // Received character from GPS - put to transmit buffer, but also handle other cases
 ISR(USART_RX_vect)
 {
@@ -60,7 +60,8 @@ ISR(USART_RX_vect)
     if (!c || c == 0xa0)
         transptime = SECS_TO_OVF(10);
     if (c == '$' && !transptime) {
-	// prepend any already queued lines
+	innmea = 1;
+	// prepend any already queued lines - maybe redundant
 	if (midlen)
 	    sendmid();
 	// prepend ms timestamp
@@ -76,6 +77,7 @@ ISR(USART_RX_vect)
     if (outhead >= OUTSIZE)
         outhead = 0;
     if (midlen && (!c || c == '\n')) {
+	innmea = 0;
 	// append any queued lines
         if (transptime)
             midlen = 0;         // dump during config
@@ -112,6 +114,10 @@ ISR(INT1_vect)
     midbuf[midlen++] = '\r';
     midbuf[midlen++] = '\n';
     ticnt[0] = ticnt[1] = ticnt[2] = '0';
+    if (!innmea) {
+	sendmid();
+	UCSRB |= _BV(UDRIE);
+    }
 }
 
 /*-------------------------------------------------------------------------*/
@@ -119,7 +125,7 @@ ISR(INT1_vect)
 static void uart_init()
 {
 
-    outhead = outtail = midlen = 0;
+    outhead = outtail = midlen = innmea = 0;
     /* turn on bluetooth */
     DDRB |= _BV(PB1);
     PORTB |= _BV(PB1);
@@ -324,6 +330,10 @@ ISR(TIMER1_COMPA_vect)
     memcpy(&midbuf[midlen], jmsgbuf, jmsglen);
     midlen += jmsglen;
     jmsglen = 0;
+    if (!innmea) {
+	sendmid();
+	UCSRB |= _BV(UDRIE);
+    }
 }
 
 // Process edge on J1850
