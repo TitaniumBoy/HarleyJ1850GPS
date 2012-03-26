@@ -26,17 +26,14 @@
 #define VPW_EOF_MIN		240     /* us */
 #define VPW_SLEEP_MIN		 20     /* s */
 
-#undef INVERSE_POLARITY
-
-#define PPS
-
-static unsigned char ticnt[5] = "000\r\n";
+#ifdef MSTAMP
+static unsigned char ticnt[5];
 static unsigned calclk = MS(1);
+#endif
 
 /*-------------------------------------------------------------------------*/
-#define OUTSIZE 64
-static unsigned char outbuf[OUTSIZE + (OUTSIZE >> 1)], outhead, outtail, midbuf[OUTSIZE], midlen;
-
+#define OUTSIZE 96
+static unsigned char  jmsgbuf[40], midbuf[64], outbuf[OUTSIZE], outhead, outtail,  midlen, jmsglen;
 // add buffered data from J1850 or PPS or whereever to output buffer
 static void sendmid()
 {
@@ -61,6 +58,7 @@ ISR(USART_RX_vect)
         transptime = SECS_TO_OVF(10);
     if (c == '$' && !transptime) {
 	innmea = 1;
+#ifdef MSTAMP
 	// prepend any already queued lines - maybe redundant
 	if (midlen)
 	    sendmid();
@@ -71,6 +69,7 @@ ISR(USART_RX_vect)
             if (outhead >= OUTSIZE)
                 outhead = 0;
         }
+#endif
     }
 
     outbuf[outhead++] = c;
@@ -104,16 +103,18 @@ ISR(USART_UDRE_vect)
 // PPS on the UTC second mark
 ISR(INT1_vect)
 {
+#ifdef MSTAMP
     OCR1B = TCNT1 + calclk; // resync mS counter
-
     // can adjust calclk here based on ticnt not being 999 or just rollover to 000
-
     memcpy(&midbuf[midlen], ticnt, 5);
     midlen += 5;
+#endif
     midbuf[midlen++] = '=';
     midbuf[midlen++] = '\r';
     midbuf[midlen++] = '\n';
+#ifdef MSTAMP
     ticnt[0] = ticnt[1] = ticnt[2] = '0';
+#endif
     if (!innmea) {
 	sendmid();
 	UCSRB |= _BV(UDRIE);
@@ -124,7 +125,9 @@ ISR(INT1_vect)
 // set up UART port and configuration, out of reset and deep sleep
 static void uart_init()
 {
-
+#ifdef MSTAMP
+    strcpy_P(ticnt, PSTR( "000\r\n"));
+#endif
     outhead = outtail = midlen = innmea = 0;
     /* turn on bluetooth */
     DDRB |= _BV(PB1);
@@ -157,6 +160,7 @@ static void uart_puts_P(const char *p)
 }
 
 /*-------------------------------------------------------------------------*/
+#ifdef MSTAMP
 // 1mS tick - increment millisecond tick string
 ISR(TIMER1_COMPB_vect)
 {
@@ -176,21 +180,17 @@ ISR(TIMER1_COMPB_vect)
     else
         ticnt[0] = '0';
 }
-
+#endif
 /*-------------------------------------------------------------------------*/
 static volatile unsigned int lastedge;  /* = 0 */
 static unsigned char polarity;  /* = 0 */
-static unsigned char jbitaccum, jbitcnt, jmsgbuf[40], jmsglen;
+static unsigned char jbitaccum, jbitcnt;
 
 // General setup of timing and J1850 - for out of reset and out of deep sleep
 void receiver_init(void)
 {
     lastedge = 0;
-#ifndef INVERSE_POLARITY
     polarity = 0;
-#else
-    polarity = 1;
-#endif
     jmsglen = 0;
     jbitaccum = 0;
     jbitcnt = 0;
@@ -210,13 +210,12 @@ void receiver_init(void)
 
     OCR1A = US(VPW_EOF_MIN);    /* timeout - EOD */
 
-#ifdef PPS
     MCUCR |= 0xC;
     GIMSK |= 0x80;
+#ifdef MSTAMP
     TIFR |= _BV(OCF1B);         /* clear compare match interrupt */
     TIMSK |= _BV(OCIE1B);       /* enable compare match interrupt */
 #endif
-
 }
 
 /*-------------------------------------------------------------------------*/
@@ -259,6 +258,7 @@ void deepsleep(void)
 
     /* turn off bluetooth */
     PORTB &= ~_BV(PB1);
+    DDRB &= ~_BV(PB1);
 
     /* disable UART */
     UCSRB = 0;
@@ -361,16 +361,21 @@ ISR(TIMER1_CAPT_vect)
 
     /* doesn't quite do IFRs - normalization bit, crc? */
     if (!polarity && width >= US(VPW_SOF_MIN)) {
+#ifdef MSTAMP
         memcpy(jmsgbuf, ticnt, 5);
-        jmsglen = 5;
-        jmsgbuf[jmsglen++] = 'J';
+        jmsglen = 6;
+        jmsgbuf[5] = 'J';
+#else
+	jmsglen = 1;
+	jmsgbuf[0] = 'J';
+#endif
         jbitcnt = jbitaccum = 0;
         return;
     }
 
     jbitaccum <<= 1;
     if ((width < US(VPW_LONG_PULSE_MIN)) ^ polarity)
-        jbitaccum++;
+	jbitaccum++;
     if (++jbitcnt < 4)
         return;
     jmsgbuf[jmsglen++] = jbitaccum > 9 ? 'A' - 10 + jbitaccum : '0' + jbitaccum;
