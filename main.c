@@ -12,43 +12,43 @@
 #include <util/delay.h>
 
 /*-------------------------------------------------------------------------*/
+#define INACT_TIMEOUT		 20     /* s */
 
-#define TIMER_PRESCALER	8
+#define TIMER_PRESCALER	64
 
 /* timing formulas */
-#define US(x)		((x) * ((F_CPU) / 1000000) / (TIMER_PRESCALER))
-#define MS(x)		((x) * ((F_CPU) / 1000) / (TIMER_PRESCALER))
-#define SECS_TO_OVF(x)	((x) * (((F_CPU) / (TIMER_PRESCALER)) / 65536))
+#define MS(x)		((x) * (F_CPU / 1000) / (TIMER_PRESCALER))
+#define US(x)		(MS(x) / 1000)
+#define SECS_TO_OVF(x)	((x) * F_CPU / (TIMER_PRESCALER * 65536))
 
 #define VPW_SHORT_PULSE_MIN	 35     /* us */
 #define VPW_LONG_PULSE_MIN	 97     /* us */
 #define VPW_SOF_MIN		164     /* us */
 #define VPW_EOF_MIN		240     /* us */
-#define VPW_SLEEP_MIN		 20     /* s */
 
-#ifdef MSTAMP
-static unsigned char ticnt[5];
-static unsigned calclk = MS(1);
-#endif
 
 /*-------------------------------------------------------------------------*/
 #define OUTSIZE 96
-static unsigned char  jmsgbuf[40], midbuf[64], outbuf[OUTSIZE], outhead, outtail,  midlen, jmsglen;
+#define MIDSIZE 80
+#define JBSIZE 24
+static unsigned char  jmsgbuf[JBSIZE], midbuf[MIDSIZE], outbuf[OUTSIZE], outhead, outtail,  midlen, jmsglen;
+#define UPUTC(x) { outbuf[outhead++] = (x); if (outhead >= OUTSIZE) outhead = 0; }
+#define UGETC(x) { (x) = outbuf[outtail++]; if (outtail >= OUTSIZE) outtail = 0; }
+
+
 // add buffered data from J1850 or PPS or whereever to output buffer
 static void sendmid()
 {
     unsigned char *mp = midbuf;
     while (midlen) {
-        outbuf[outhead++] = *mp++;
-        if (outhead >= OUTSIZE)
-            outhead = 0;
+	UPUTC(*mp++);
         midlen--;
     }
 }
 
 // time in TOVFs to make the UART RX to TX transparent (dump other traffic).
-static unsigned transptime = 0;
-static unsigned char innmea = 0;
+static unsigned transptime;
+static unsigned char innmea;
 // Received character from GPS - put to transmit buffer, but also handle other cases
 ISR(USART_RX_vect)
 {
@@ -56,25 +56,9 @@ ISR(USART_RX_vect)
 
     if (!c || c == 0xa0)
         transptime = SECS_TO_OVF(10);
-    if (c == '$' && !transptime) {
+    if (c == '$' && !transptime)
 	innmea = 1;
-#ifdef MSTAMP
-	// prepend any already queued lines - maybe redundant
-	if (midlen)
-	    sendmid();
-	// prepend ms timestamp
-        unsigned char t;
-        for (t = 0; t < 5; t++) {
-            outbuf[outhead++] = ticnt[t];
-            if (outhead >= OUTSIZE)
-                outhead = 0;
-        }
-#endif
-    }
-
-    outbuf[outhead++] = c;
-    if (outhead >= OUTSIZE)
-        outhead = 0;
+    UPUTC(c);
     if (midlen && (!c || c == '\n')) {
 	innmea = 0;
 	// append any queued lines
@@ -95,43 +79,78 @@ ISR(USART_UDRE_vect)
         UCSRB &= ~_BV(UDRIE);
         return;
     }
-    UDR = outbuf[outtail++];
-    if (outtail >= OUTSIZE)
-        outtail = 0;
+    UGETC(UDR);
 }
 
+/*-------------------------------------------------------------------------*/
+static unsigned hightime, marktime, marklow;
+static unsigned char tsout[2];
+static void timestamp(unsigned lowtime) {
+    unsigned long mark = marktime;
+    mark <<= 16;
+    mark |= marklow;
+    unsigned long now = hightime;
+    now <<= 16;
+    now |= lowtime;
+    now -= mark;
+    if( now > (F_CPU/TIMER_PRESCALER) ) {
+	now -= (F_CPU/TIMER_PRESCALER);
+	if( now > (F_CPU/TIMER_PRESCALER) ) { // reset mark
+	    marklow = TCNT1;
+	    marktime = hightime;
+	    now = 0;
+	}
+	else {
+	    mark += (F_CPU/TIMER_PRESCALER); // move mark 1 second
+	    marklow = mark;
+	    marktime = mark >> 16;
+	}
+    }
+    unsigned char digit = '0';
+    while( now >= (F_CPU/TIMER_PRESCALER/10) )
+	digit++, now -= (F_CPU/TIMER_PRESCALER/10);
+    tsout[0] = digit;
+    digit = '0';
+    while( now >= (F_CPU/TIMER_PRESCALER/100) )
+	digit++, now -= (F_CPU/TIMER_PRESCALER/100);
+    tsout[1] = digit;
+}
 // PPS on the UTC second mark
+
 ISR(INT1_vect)
 {
-#ifdef MSTAMP
-    OCR1B = TCNT1 + calclk; // resync mS counter
-    // can adjust calclk here based on ticnt not being 999 or just rollover to 000
-    memcpy(&midbuf[midlen], ticnt, 5);
-    midlen += 5;
-#endif
+    PORTB |= _BV(PB2);
+    unsigned t = TCNT1;
     midbuf[midlen++] = '=';
+    marktime = hightime;
+    marklow = t;
+    //    if( TIFR & _BV(TOV1) ) // timer overflowed while in this interrupt
+    //	marktime++;
     midbuf[midlen++] = '\r';
     midbuf[midlen++] = '\n';
-#ifdef MSTAMP
-    ticnt[0] = ticnt[1] = ticnt[2] = '0';
-#endif
     if (!innmea) {
 	sendmid();
 	UCSRB |= _BV(UDRIE);
     }
+    PORTB &= ~_BV(PB2);
+
 }
 
 /*-------------------------------------------------------------------------*/
 // set up UART port and configuration, out of reset and deep sleep
 static void uart_init()
 {
-#ifdef MSTAMP
-    strcpy_P(ticnt, PSTR( "000\r\n"));
-#endif
+
     outhead = outtail = midlen = innmea = 0;
     /* turn on bluetooth */
     DDRB |= _BV(PB1);
     PORTB |= _BV(PB1);
+
+
+    DDRB |= _BV(PB2);
+    PORTB &= ~_BV(PB2);
+
+
 
     /* setup serial port */
 #define BAUD 115200
@@ -160,28 +179,6 @@ static void uart_puts_P(const char *p)
 }
 
 /*-------------------------------------------------------------------------*/
-#ifdef MSTAMP
-// 1mS tick - increment millisecond tick string
-ISR(TIMER1_COMPB_vect)
-{
-    OCR1B += calclk;
-    if (ticnt[2] < '9') {
-        ticnt[2]++;
-        return;
-    }
-    ticnt[2] = '0';
-    if (ticnt[1] < '9') {
-        ticnt[1]++;
-        return;
-    }
-    ticnt[1] = '0';
-    if (ticnt[1] < '9')
-        ticnt[0]++;
-    else
-        ticnt[0] = '0';
-}
-#endif
-/*-------------------------------------------------------------------------*/
 static volatile unsigned int lastedge;  /* = 0 */
 static unsigned char polarity;  /* = 0 */
 static unsigned char jbitaccum, jbitcnt;
@@ -194,6 +191,9 @@ void receiver_init(void)
     jmsglen = 0;
     jbitaccum = 0;
     jbitcnt = 0;
+    hightime = 0;
+    marktime = 0;
+    marklow = 0;
     /* j1850 input - PD6 as input without pullup */
     DDRD &= ~_BV(PD6);
     PORTD &= ~_BV(PD6);
@@ -202,7 +202,8 @@ void receiver_init(void)
     TCNT1 = 0;                  /* reset counter value */
     /* activate noise canceller, */
     /* trigger on rising edge, clk/8 */
-    TCCR1B = _BV(ICES1) | _BV(ICNC1) | _BV(CS11);
+    // lower 3 bits is div, off,1,8,64,256,1024,extfall,extris ; CS12,11,10
+    TCCR1B = _BV(ICES1) | _BV(ICNC1) | _BV(CS11) | _BV(CS10);
 
     /* clear and enable Overflow and Input Capture interrupt */
     TIFR |= _BV(TOV1) | _BV(ICF1);
@@ -212,10 +213,6 @@ void receiver_init(void)
 
     MCUCR |= 0xC;
     GIMSK |= 0x80;
-#ifdef MSTAMP
-    TIFR |= _BV(OCF1B);         /* clear compare match interrupt */
-    TIMSK |= _BV(OCIE1B);       /* enable compare match interrupt */
-#endif
 }
 
 /*-------------------------------------------------------------------------*/
@@ -258,7 +255,7 @@ void deepsleep(void)
 
     /* turn off bluetooth */
     PORTB &= ~_BV(PB1);
-    DDRB &= ~_BV(PB1);
+    //    DDRB &= ~_BV(PB1);
 
     /* disable UART */
     UCSRB = 0;
@@ -299,13 +296,14 @@ volatile unsigned inactime;     /* = 0 */
 // overflow - used as a coarse counter for long timeouts
 ISR(TIMER1_OVF_vect)
 {
+    hightime++;
     // downcount transparency counter if active
     if (transptime) {
         transptime--;
         return;
     }
     // downcount inactivity timer
-    if (inactime > SECS_TO_OVF(VPW_SLEEP_MIN)) {
+    if (inactime > SECS_TO_OVF(INACT_TIMEOUT)) {
         if (PIND & _BV(PD4))
             return;             // don't powerdown while BT active
         inactime = 0;
@@ -327,8 +325,10 @@ ISR(TIMER1_COMPA_vect)
     /* timeout - J1850 EOD/EOF */
     jmsgbuf[jmsglen++] = '\r';
     jmsgbuf[jmsglen++] = '\n';
-    memcpy(&midbuf[midlen], jmsgbuf, jmsglen);
-    midlen += jmsglen;
+    if( midlen + jmsglen < MIDSIZE ){
+	memcpy(&midbuf[midlen], jmsgbuf, jmsglen);
+	midlen += jmsglen;
+    }
     jmsglen = 0;
     if (!innmea) {
 	sendmid();
@@ -361,14 +361,14 @@ ISR(TIMER1_CAPT_vect)
 
     /* doesn't quite do IFRs - normalization bit, crc? */
     if (!polarity && width >= US(VPW_SOF_MIN)) {
-#ifdef MSTAMP
-        memcpy(jmsgbuf, ticnt, 5);
-        jmsglen = 6;
-        jmsgbuf[5] = 'J';
-#else
-	jmsglen = 1;
-	jmsgbuf[0] = 'J';
-#endif
+
+
+	jmsglen = 3;
+	timestamp(now);
+	jmsgbuf[0] = tsout[0];
+	jmsgbuf[1] = tsout[1];
+	jmsgbuf[2] = 'J';
+
         jbitcnt = jbitaccum = 0;
         return;
     }
@@ -378,7 +378,8 @@ ISR(TIMER1_CAPT_vect)
 	jbitaccum++;
     if (++jbitcnt < 4)
         return;
-    jmsgbuf[jmsglen++] = jbitaccum > 9 ? 'A' - 10 + jbitaccum : '0' + jbitaccum;
+    if( jmsglen < 22 )
+	jmsgbuf[jmsglen++] = jbitaccum > 9 ? 'A' - 10 + jbitaccum : '0' + jbitaccum;
     jbitcnt = jbitaccum = 0;
 }
 
