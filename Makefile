@@ -1,5 +1,5 @@
-PRG		= j1850-full
-OBJ		= main.o
+PRG		= harleyjg
+OBJ		= harleyjg.o
 MCU		= attiny4313
 OPTIMIZE	= -Os
 
@@ -22,7 +22,7 @@ all: $(PRG).elf lst text eeprom size
 $(PRG).elf: $(OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-j1850-full.o: j1850-full.c
+harleyjg.o: harleyjg.c
 
 clean:
 	rm -rf *.o

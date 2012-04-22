@@ -146,11 +146,8 @@ static void uart_init()
     DDRB |= _BV(PB1);
     PORTB |= _BV(PB1);
 
-
     DDRB |= _BV(PB2);
     PORTB &= ~_BV(PB2);
-
-
 
     /* setup serial port */
 #define BAUD 115200
@@ -349,7 +346,7 @@ ISR(TIMER1_CAPT_vect)
     lastedge = now;
     polarity ^= 1;
 
-    /* bad width or outside, will happen at EOD */
+    /* bad width or outside, will happen at EOD - ignore */
     if (width >= US(VPW_EOF_MIN) || width < US(VPW_SHORT_PULSE_MIN))
         return;
 
@@ -361,14 +358,16 @@ ISR(TIMER1_CAPT_vect)
 
     /* doesn't quite do IFRs - normalization bit, crc? */
     if (!polarity && width >= US(VPW_SOF_MIN)) {
-
-
+#if 1
 	jmsglen = 3;
 	timestamp(now);
 	jmsgbuf[0] = tsout[0];
 	jmsgbuf[1] = tsout[1];
 	jmsgbuf[2] = 'J';
-
+#else
+	jmsglen = 1;
+	jmsgbuf[0] = 'J';
+#endif
         jbitcnt = jbitaccum = 0;
         return;
     }
