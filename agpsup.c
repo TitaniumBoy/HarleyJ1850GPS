@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-static char string[64];
+static char string[256];
 static int readtonull(int fd)
 {
     int l;
@@ -29,8 +29,8 @@ static const unsigned char agpsena[9] = { 0xa0, 0xa1, 0x00, 0x02, 0x33, 0x01, 0x
 int main(int argc, char *argv[])
 {
     int fd;
-    //    char gpsdev[64] = "/dev/rfcomm0";
-    char gpsdev[64] = "/dev/ttyUSB0";
+    char gpsdev[64] = "/dev/rfcomm0";
+    //    char gpsdev[64] = "/dev/ttyUSB0";
     unsigned i;
 
     if( argc > 1 )
@@ -71,8 +71,8 @@ int main(int argc, char *argv[])
     do {
 	printf( "Startup\n" );
         do { // flush input buffer
-            i = read(fd, string, 64);
-        } while( i == 64 );
+            i = read(fd, string, 256);
+        } while( i == 256 );
         write(fd, setagps, 8);
         i = 0;
 	string[0] = 0;
@@ -83,15 +83,16 @@ int main(int argc, char *argv[])
 	    if( cnt > 5000 )
 		continue;
 	}
-        while (i < 64) {
-            i += read(fd, &string[i], 64 - i);
-            if (i > 0 && string[i-1] == 0x0a)
+	printf( "Response\n" );
+        while (i < 256) {
+            i += read(fd, &string[i], 256 - i); // read extra junk after the response, sometimes partial sentence queued and going out.
+            if (i > 8 && string[8] == 0x0a)
                 break;
         }
     } while( memcmp(&string[i - 9], agpsresp, 9) );
     printf( "Venus Ready\n" );
     
-    usleep(500000);
+    usleep(500000);  // wait for switch into AGPS mode - this is required.
     /* start the transmission */
     sprintf(string, "BINSIZE = %ld Checksum = %d Checksumb = %d ", ephbytes, csuma, csumb);
     write(fd, string, strlen(string) + 1);
