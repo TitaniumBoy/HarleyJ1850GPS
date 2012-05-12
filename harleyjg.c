@@ -35,10 +35,14 @@ static unsigned char  jmsgbuf[JBSIZE], midbuf[MIDSIZE], outbuf[OUTSIZE], outhead
 #define UPUTC(x) { outbuf[outhead++] = (x); if (outhead >= OUTSIZE) outhead = 0; }
 #define UGETC(x) { (x) = outbuf[outtail++]; if (outtail >= OUTSIZE) outtail = 0; }
 
+// time in TOVFs to make the UART RX to TX transparent (dump other traffic).
+static unsigned transptime;
 
 // add buffered data from J1850 or PPS or whereever to output buffer
 static void sendmid()
 {
+    if( transptime )
+	return;
     unsigned char *mp = midbuf;
     while (midlen) {
 	UPUTC(*mp++);
@@ -46,9 +50,7 @@ static void sendmid()
     }
 }
 
-// time in TOVFs to make the UART RX to TX transparent (dump other traffic).
-static unsigned transptime;
-static unsigned char innmea;
+static unsigned char innmea; // middle of NMEA, wait for end to add interleaved
 // Received character from GPS - put to transmit buffer, but also handle other cases
 ISR(USART_RX_vect)
 {
@@ -119,7 +121,9 @@ static void timestamp(unsigned lowtime) {
 
 ISR(INT1_vect)
 {
-    PORTB |= _BV(PB2);
+    if( transptime )
+	return;
+    //    PORTB |= _BV(PB2);
     unsigned t = TCNT1;
     midbuf[midlen++] = '=';
     marktime = hightime;
@@ -132,7 +136,7 @@ ISR(INT1_vect)
 	sendmid();
 	UCSRB |= _BV(UDRIE);
     }
-    PORTB &= ~_BV(PB2);
+    //    PORTB &= ~_BV(PB2);
 
 }
 
