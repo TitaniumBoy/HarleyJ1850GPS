@@ -86,7 +86,7 @@ ISR(USART_UDRE_vect)
 
 /*-------------------------------------------------------------------------*/
 static unsigned hightime, marktime, marklow;
-static unsigned char tsout[2];
+static unsigned char tsout[3];
 static void timestamp(unsigned lowtime) {
     unsigned long mark = marktime;
     mark <<= 16;
@@ -108,6 +108,8 @@ static void timestamp(unsigned lowtime) {
 	    marktime = mark >> 16;
 	}
     }
+    while( now >= (F_CPU/TIMER_PRESCALER) )
+	now -= (F_CPU/TIMER_PRESCALER);
     unsigned char digit = '0';
     while( now >= (F_CPU/TIMER_PRESCALER/10) )
 	digit++, now -= (F_CPU/TIMER_PRESCALER/10);
@@ -116,6 +118,10 @@ static void timestamp(unsigned lowtime) {
     while( now >= (F_CPU/TIMER_PRESCALER/100) )
 	digit++, now -= (F_CPU/TIMER_PRESCALER/100);
     tsout[1] = digit;
+    digit = '0';
+    while( now >= (F_CPU/TIMER_PRESCALER/1000) )
+	digit++, now -= (F_CPU/TIMER_PRESCALER/1000);
+    tsout[2] = digit;
 }
 // PPS on the UTC second mark
 
@@ -125,6 +131,11 @@ ISR(INT1_vect)
 	return;
     //    PORTB |= _BV(PB2);
     unsigned t = TCNT1;
+
+    timestamp(t);
+    midbuf[midlen++] = tsout[0];
+    midbuf[midlen++] = tsout[1];
+    midbuf[midlen++] = tsout[2];
     midbuf[midlen++] = '=';
     marktime = hightime;
     marklow = t;
@@ -363,11 +374,12 @@ ISR(TIMER1_CAPT_vect)
     /* doesn't quite do IFRs - normalization bit, crc? */
     if (!polarity && width >= US(VPW_SOF_MIN)) {
 #if 1
-	jmsglen = 3;
+	jmsglen = 4;
 	timestamp(now);
 	jmsgbuf[0] = tsout[0];
 	jmsgbuf[1] = tsout[1];
-	jmsgbuf[2] = 'J';
+	jmsgbuf[2] = tsout[2];
+	jmsgbuf[3] = 'J';
 #else
 	jmsglen = 1;
 	jmsgbuf[0] = 'J';
