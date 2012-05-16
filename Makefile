@@ -9,6 +9,8 @@ DUDE_PORT	= usb
 DEFS		=
 LIBS		=
 
+HOSTCC		= gcc -Wall -O6
+
 CC		= avr-gcc
 
 CFLAGS		= --std=c99 -g -Wall $(OPTIMIZE) -mmcu=$(MCU) $(DEFS)
@@ -17,10 +19,13 @@ LDFLAGS		= -Wl,-Map,$(PRG).map
 OBJCOPY		= avr-objcopy
 OBJDUMP		= avr-objdump
 
-all: $(PRG).elf lst text eeprom size
+all: $(PRG).elf lst text eeprom size harley
 
 $(PRG).elf: $(OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+
+harley: harley.c
+	$(HOSTCC) harley.c -o $@
 
 harleyjg.o: harleyjg.c
 
