@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 struct harley {
     int rpm, vspd, full, gear, clutch, neutral, engtemp, turnsig, odoaccum, fuelaccum;
@@ -78,6 +79,21 @@ void calchog(char *outb, int mstime)
     if (i < 5 || 0xc4 != j) {
         sprintf(outb, "$PDERR,%d,%02x,", i, j);
         strcat(outb, inb); 
+#if 0
+	for( x = 0; x < i; x++) {
+	    for( y = 0 ; y < 8 ; y++ ) {
+		hex[x] ^= 1 << y;
+		j = crc(hex,i);
+		if( j == 0xc4 )
+		    break;
+		hex[x] ^= 1 << y;		
+	    }
+	    if( y < 8 )
+		break;
+	}
+	if( y < 8 )
+	    fprintf( stderr, "%s FIX %d %d %02x %02x %s\n", outb, x, y, hex[x], 1<<y ^hex[x] ,inb );
+#endif
         return;
     }
 
@@ -201,8 +217,10 @@ void calchog(char *outb, int mstime)
     addnmeacksum(outb);
 
 }
-unsigned char buf[4096];
-int main(int argc, char argv[]) {
+
+char buf[4096];
+
+int main(int argc, char *argv[]) {
     unsigned ms;
 
     while(!feof(stdin) ) {
@@ -214,4 +232,5 @@ int main(int argc, char argv[]) {
 	calchog( &buf[4], ms );
 	printf( "%3d %s\n", ms, &buf[4] );
     }
+    return 0;
 }
