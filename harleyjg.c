@@ -50,6 +50,11 @@ static void sendmid()
     }
 }
 
+/*-------------------------------------------------------------------------*/
+static unsigned lasttcnt, hightime, marktime, marklow;
+#define checkhitime(t) { if( t < lasttcnt )hightime++; lasttcnt = t;}
+
+/*-------------------------------------------------------------------------*/
 static unsigned char innmea; // middle of NMEA, wait for end to add interleaved
 // Received character from GPS - put to transmit buffer, but also handle other cases
 ISR(USART_RX_vect)
@@ -85,19 +90,21 @@ ISR(USART_UDRE_vect)
 }
 
 /*-------------------------------------------------------------------------*/
-static unsigned hightime, marktime, marklow;
 static unsigned char tsout[3];
 static void timestamp(unsigned lowtime) {
     unsigned long mark = marktime;
     mark <<= 16;
     mark |= marklow;
+    checkhitime(lowtime);
     unsigned long now = hightime;
     now <<= 16;
     now |= lowtime;
     now -= mark;
+    if( (now & 0xffff0000UL) == 0xffff0000UL )
+	now &= 0xffffUL;
     if( now > (F_CPU/TIMER_PRESCALER) ) {
 	now -= (F_CPU/TIMER_PRESCALER);
-	if( now > (F_CPU/TIMER_PRESCALER) ) { // reset mark
+	if( now > 8*(F_CPU/TIMER_PRESCALER) ) { // reset mark
 	    marklow = TCNT1;
 	    marktime = hightime;
 	    now = 0;
@@ -119,7 +126,7 @@ static void timestamp(unsigned lowtime) {
 	digit++, now -= (F_CPU/TIMER_PRESCALER/100);
     tsout[1] = digit;
     digit = '0';
-    while( now >= (F_CPU/TIMER_PRESCALER/1000) )
+    while( now > (F_CPU/TIMER_PRESCALER/1000) && digit < '9')
 	digit++, now -= (F_CPU/TIMER_PRESCALER/1000);
     tsout[2] = digit;
 }
@@ -155,7 +162,6 @@ ISR(INT1_vect)
 // set up UART port and configuration, out of reset and deep sleep
 static void uart_init()
 {
-
     outhead = outtail = midlen = innmea = 0;
     /* turn on bluetooth */
     DDRB |= _BV(PB1);
@@ -218,10 +224,9 @@ void receiver_init(void)
     TCCR1B = _BV(ICES1) | _BV(ICNC1) | _BV(CS11) | _BV(CS10);
 
     /* clear and enable Overflow and Input Capture interrupt */
-    TIFR |= _BV(TOV1) | _BV(ICF1);
-    TIMSK |= _BV(TOIE1) | _BV(ICIE1);
-
-    OCR1A = US(VPW_EOF_MIN);    /* timeout - EOD */
+    TIFR |= _BV(TOV1) | _BV(ICF1) | _BV(OCF1B);
+    TIMSK |= _BV(TOIE1) | _BV(ICIE1) | _BV(OCIE1B);
+    OCR1B = 32768;
 
     MCUCR |= 0xC;
     GIMSK |= 0x80;
@@ -303,12 +308,16 @@ void deepsleep(void)
 }
 
 /*-------------------------------------------------------------------------*/
-
+ISR(TIMER1_COMPB_vect)
+{
+    checkhitime(TCNT1);
+}
 volatile unsigned inactime;     /* = 0 */
 // overflow - used as a coarse counter for long timeouts
 ISR(TIMER1_OVF_vect)
 {
-    hightime++;
+    //    hightime++;
+    checkhitime(TCNT1);
     // downcount transparency counter if active
     if (transptime) {
         transptime--;
